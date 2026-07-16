@@ -42,6 +42,7 @@ interface VirtualDevice {
   targetLang2: string; // Optional secondary language
   inputText: string;
   isRecording: boolean;
+  translationEngine: "google" | "apple" | "system_app" | "mymemory";
 }
 
 interface ChatMessage {
@@ -66,6 +67,7 @@ const INITIAL_SANDBOX_DEVICES: VirtualDevice[] = [
     targetLang2: "ja",
     inputText: "",
     isRecording: false,
+    translationEngine: "google",
   },
   {
     id: "device-guest1",
@@ -78,6 +80,7 @@ const INITIAL_SANDBOX_DEVICES: VirtualDevice[] = [
     targetLang2: "es",
     inputText: "",
     isRecording: false,
+    translationEngine: "mymemory",
   },
   {
     id: "device-guest2",
@@ -90,6 +93,7 @@ const INITIAL_SANDBOX_DEVICES: VirtualDevice[] = [
     targetLang2: "en",
     inputText: "",
     isRecording: false,
+    translationEngine: "apple",
   }
 ];
 
@@ -119,6 +123,7 @@ export default function App() {
     targetLang2: "es",
     inputText: "",
     isRecording: false,
+    translationEngine: "google",
   });
 
   // State 5: Modals & Sharing state
@@ -453,6 +458,9 @@ export default function App() {
       : ["John's Pixel", "Pixel Fold", "MOTO G", "Redmi Pad"];
     const chosenName = nameList[Math.floor(Math.random() * nameList.length)];
 
+    const engines: Array<"google" | "apple" | "system_app" | "mymemory"> = ["google", "apple", "system_app", "mymemory"];
+    const chosenEngine = engines[Math.floor(Math.random() * engines.length)];
+
     const newDev: VirtualDevice = {
       id: "device-" + Math.random().toString(36).substring(2, 7),
       name: chosenName,
@@ -463,7 +471,8 @@ export default function App() {
       targetLang1: "en",
       targetLang2: "zh",
       inputText: "",
-      isRecording: false
+      isRecording: false,
+      translationEngine: chosenEngine
     };
 
     setSandboxDevices(prev => [...prev, newDev]);
@@ -640,6 +649,11 @@ export default function App() {
     const [localTranslatedMsg, setLocalTranslatedMsg] = useState<Record<string, { t1: string; t2: string }>>({});
     const chatEndRef = useRef<HTMLDivElement | null>(null);
 
+    // Clear cache when language configuration or engine changes
+    useEffect(() => {
+      setLocalTranslatedMsg({});
+    }, [device.targetLang1, device.targetLang2, device.translationEngine]);
+
     // Watch incoming messages to translate them to THIS device's unique configuration
     useEffect(() => {
       messages.forEach(async (msg) => {
@@ -657,12 +671,22 @@ export default function App() {
         if (localTranslatedMsg[msg.messageId]) return; // already translated
 
         // Translate to Target Lang 1 (Primary)
-        const t1 = await translateText(msg.text, msg.sourceLang, device.targetLang1);
+        const t1 = await translateText(
+          msg.text,
+          msg.sourceLang,
+          device.targetLang1,
+          device.translationEngine || "mymemory"
+        );
 
         // Translate to Target Lang 2 (Secondary) if set
         let t2 = "";
         if (device.targetLang2 && device.targetLang2 !== "none") {
-          t2 = await translateText(msg.text, msg.sourceLang, device.targetLang2);
+          t2 = await translateText(
+            msg.text,
+            msg.sourceLang,
+            device.targetLang2,
+            device.translationEngine || "mymemory"
+          );
         }
 
         setLocalTranslatedMsg(prev => ({
@@ -670,7 +694,7 @@ export default function App() {
           [msg.messageId]: { t1, t2 }
         }));
       });
-    }, [messages, device.targetLang1, device.targetLang2]);
+    }, [messages, device.targetLang1, device.targetLang2, device.translationEngine]);
 
     // Scroll to bottom when message log changes
     useEffect(() => {
@@ -815,74 +839,101 @@ export default function App() {
             <div className="flex-1 flex flex-col justify-between overflow-hidden">
 
               {/* Language Customization Sub-Bar (Requirement #5: Independent settings) */}
-              <div className="bg-slate-900/90 border-b border-slate-800 p-2 grid grid-cols-3 gap-1 select-none text-[10px]">
-                {/* Source Select */}
-                <div>
-                  <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">发言 (Speak)</label>
-                  <select
-                    value={device.sourceLang}
-                    onChange={(e) => {
-                      const updatedCode = e.target.value;
-                      if (isSandbox) {
-                        setSandboxDevices(prev =>
-                          prev.map(d => d.id === device.id ? { ...d, sourceLang: updatedCode } : d)
-                        );
-                      } else {
-                        setSingleDevice(prev => ({ ...prev, sourceLang: updatedCode }));
-                      }
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
-                  >
-                    {SUPPORTED_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
-                  </select>
+              <div className="bg-slate-900/95 border-b border-slate-800 p-2 space-y-2 select-none text-[10px]">
+                {/* Languages Row */}
+                <div className="grid grid-cols-3 gap-1">
+                  {/* Source Select */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">发言 (Speak)</label>
+                    <select
+                      value={device.sourceLang}
+                      onChange={(e) => {
+                        const updatedCode = e.target.value;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, sourceLang: updatedCode } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, sourceLang: updatedCode }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    >
+                      {SUPPORTED_LANGUAGES.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Primary Target Language Select */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">主目标 (Target 1)</label>
+                    <select
+                      value={device.targetLang1}
+                      onChange={(e) => {
+                        const updatedCode = e.target.value;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, targetLang1: updatedCode } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, targetLang1: updatedCode }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    >
+                      {SUPPORTED_LANGUAGES.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Secondary Target Language Select (Optional) */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">次目标 (Target 2)</label>
+                    <select
+                      value={device.targetLang2}
+                      onChange={(e) => {
+                        const updatedCode = e.target.value;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, targetLang2: updatedCode } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, targetLang2: updatedCode }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="none">⚠️ [None]</option>
+                      {SUPPORTED_LANGUAGES.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                {/* Primary Target Language Select */}
-                <div>
-                  <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">主目标 (Target 1)</label>
+                {/* Translation Engine Selector (Requirement #5) */}
+                <div className="pt-1.5 border-t border-slate-800/60 flex items-center justify-between gap-1">
+                  <label className="text-[8px] text-slate-400 uppercase font-bold tracking-wider">翻译引擎 (Engine):</label>
                   <select
-                    value={device.targetLang1}
+                    value={device.translationEngine || "mymemory"}
                     onChange={(e) => {
-                      const updatedCode = e.target.value;
+                      const updatedEngine = e.target.value as any;
                       if (isSandbox) {
                         setSandboxDevices(prev =>
-                          prev.map(d => d.id === device.id ? { ...d, targetLang1: updatedCode } : d)
+                          prev.map(d => d.id === device.id ? { ...d, translationEngine: updatedEngine } : d)
                         );
                       } else {
-                        setSingleDevice(prev => ({ ...prev, targetLang1: updatedCode }));
+                        setSingleDevice(prev => ({ ...prev, translationEngine: updatedEngine }));
                       }
                     }}
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    className="flex-1 max-w-[195px] bg-slate-950 border border-slate-800 text-white text-[9px] rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
                   >
-                    {SUPPORTED_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Secondary Target Language Select (Optional) */}
-                <div>
-                  <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">次目标 (Target 2)</label>
-                  <select
-                    value={device.targetLang2}
-                    onChange={(e) => {
-                      const updatedCode = e.target.value;
-                      if (isSandbox) {
-                        setSandboxDevices(prev =>
-                          prev.map(d => d.id === device.id ? { ...d, targetLang2: updatedCode } : d)
-                        );
-                      } else {
-                        setSingleDevice(prev => ({ ...prev, targetLang2: updatedCode }));
-                      }
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="none">⚠️ [None]</option>
-                    {SUPPORTED_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
+                    <option value="google">🌐 Google Translate (Open API)</option>
+                    <option value="apple">🍎 Apple Translate (Local OS)</option>
+                    <option value="system_app">📱 System Translation App</option>
+                    <option value="mymemory">💬 MyMemory Open Translation</option>
                   </select>
                 </div>
               </div>
