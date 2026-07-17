@@ -101,13 +101,46 @@ const LOCAL_FALLBACK_DICTIONARY: Record<string, Record<string, string>> = {
 };
 
 /**
+ * Perform translation using free client-side Google Translate API (gtx endpoint).
+ */
+export async function translateTextGoogle(
+  text: string,
+  sourceLang: string,
+  targetLang: string
+): Promise<string> {
+  if (!text || text.trim() === "") return "";
+  if (sourceLang === targetLang) return text;
+
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data[0]) {
+        return data[0].map((item: any) => item[0]).join("");
+      }
+    }
+  } catch (error) {
+    console.warn("Google Translate API failed", error);
+  }
+  return "";
+}
+
+/**
  * Perform translation from source language to target language.
- * Attempts to call MyMemory API first, falls back to intelligent translation approximation or local mapping if unavailable.
+ * Attempts to call Google Translate or MyMemory API first, falls back to intelligent translation approximation or local mapping if unavailable.
  */
 export async function translateText(
   text: string,
   sourceLang: string,
-  targetLang: string
+  targetLang: string,
+  engine: "google" | "mymemory" = "google"
 ): Promise<string> {
   if (!text || text.trim() === "") return "";
   if (sourceLang === targetLang) return text;
@@ -118,6 +151,14 @@ export async function translateText(
     return LOCAL_FALLBACK_DICTIONARY[normalizedText][targetLang];
   }
 
+  if (engine === "google") {
+    const googleResult = await translateTextGoogle(text, sourceLang, targetLang);
+    if (googleResult && googleResult.trim() !== "") {
+      return googleResult;
+    }
+  }
+
+  // If MyMemory chosen, or Google fell back
   try {
     const pair = `${sourceLang}|${targetLang}`;
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;
