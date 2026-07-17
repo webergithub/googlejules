@@ -97,6 +97,9 @@ export default function App() {
   // State 1: App View Mode (Virtual Lab with multiple phones OR Single mobile view)
   const [appMode, setAppMode] = useState<"sandbox" | "single">("sandbox");
 
+  // Active translation engine state
+  const [translationEngine, setTranslationEngine] = useState<"google" | "mymemory">("google");
+
   // State 2: Active Room Information
   const [groupId, setGroupId] = useState<string>("");
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
@@ -137,6 +140,8 @@ export default function App() {
 
   // WebSocket Reference
   const wsRef = useRef<WebSocket | null>(null);
+  const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const joinedDevicesRef = useRef<Record<string, boolean>>({});
 
   // Parse invite parameters from the address bar on load
   useEffect(() => {
@@ -148,7 +153,8 @@ export default function App() {
       setGroupId(roomParam.toUpperCase());
       setSingleDevice(prev => ({
         ...prev,
-        isHost: false
+        isHost: false,
+        isConnected: true
       }));
     }
   }, []);
@@ -160,21 +166,7 @@ export default function App() {
 
     ws.onopen = () => {
       console.log("WebSocket connection connected!");
-
-      // Auto-join if groupId exists
-      const currentRoomId = groupId || new URLSearchParams(window.location.search).get("roomId") || "";
-      if (currentRoomId) {
-        const cleanRoomId = currentRoomId.toUpperCase();
-        if (appMode === "single") {
-          joinRoomWS(cleanRoomId, singleDevice);
-        } else {
-          sandboxDevices.forEach(dev => {
-            if (dev.isConnected) {
-              joinRoomWS(cleanRoomId, dev);
-            }
-          });
-        }
-      }
+      setWsConnected(true);
     };
 
     ws.onmessage = (event) => {
@@ -221,12 +213,37 @@ export default function App() {
 
     ws.onclose = () => {
       console.log("WebSocket connection closed");
+      setWsConnected(false);
     };
 
     return () => {
       ws.close();
     };
   }, []); // Empty dependency array means this WebSocket stays alive and stable forever!
+
+  // Reset joined devices cache whenever room code changes
+  useEffect(() => {
+    joinedDevicesRef.current = {};
+  }, [groupId]);
+
+  // Reactive and stable auto-join hook
+  useEffect(() => {
+    if (!wsConnected || !groupId) return;
+
+    if (appMode === "single") {
+      if (singleDevice.isConnected && !joinedDevicesRef.current[singleDevice.id]) {
+        joinRoomWS(groupId, singleDevice);
+        joinedDevicesRef.current[singleDevice.id] = true;
+      }
+    } else {
+      sandboxDevices.forEach(dev => {
+        if (dev.isConnected && !joinedDevicesRef.current[dev.id]) {
+          joinRoomWS(groupId, dev);
+          joinedDevicesRef.current[dev.id] = true;
+        }
+      });
+    }
+  }, [wsConnected, groupId, appMode, singleDevice.isConnected, sandboxDevices]);
 
   // Handle invitation link generation when room changes
   useEffect(() => {
@@ -643,34 +660,33 @@ export default function App() {
     // Watch incoming messages to translate them to THIS device's unique configuration
     useEffect(() => {
       messages.forEach(async (msg) => {
+        const cacheKey = `${msg.messageId}_${device.targetLang1}_${device.targetLang2}_${translationEngine}`;
+        if (localTranslatedMsg[cacheKey]) return; // already translated for this engine & language combo
+
         // Skip translating own messages for target (can just show source text or also display target if helpful)
         if (msg.senderId === device.id) {
-          if (!localTranslatedMsg[msg.messageId]) {
-            setLocalTranslatedMsg(prev => ({
-              ...prev,
-              [msg.messageId]: { t1: msg.text, t2: "" }
-            }));
-          }
+          setLocalTranslatedMsg(prev => ({
+            ...prev,
+            [cacheKey]: { t1: msg.text, t2: "" }
+          }));
           return;
         }
 
-        if (localTranslatedMsg[msg.messageId]) return; // already translated
-
         // Translate to Target Lang 1 (Primary)
-        const t1 = await translateText(msg.text, msg.sourceLang, device.targetLang1);
+        const t1 = await translateText(msg.text, msg.sourceLang, device.targetLang1, translationEngine);
 
         // Translate to Target Lang 2 (Secondary) if set
         let t2 = "";
         if (device.targetLang2 && device.targetLang2 !== "none") {
-          t2 = await translateText(msg.text, msg.sourceLang, device.targetLang2);
+          t2 = await translateText(msg.text, msg.sourceLang, device.targetLang2, translationEngine);
         }
 
         setLocalTranslatedMsg(prev => ({
           ...prev,
-          [msg.messageId]: { t1, t2 }
+          [cacheKey]: { t1, t2 }
         }));
       });
-    }, [messages, device.targetLang1, device.targetLang2]);
+    }, [messages, device.targetLang1, device.targetLang2, translationEngine]);
 
     // Scroll to bottom when message log changes
     useEffect(() => {
@@ -905,7 +921,8 @@ export default function App() {
 
                 {messages.map((msg) => {
                   const isOwn = msg.senderId === device.id;
-                  const translations = localTranslatedMsg[msg.messageId] || { t1: "", t2: "" };
+                  const cacheKey = `${msg.messageId}_${device.targetLang1}_${device.targetLang2}_${translationEngine}`;
+                  const translations = localTranslatedMsg[cacheKey] || { t1: "", t2: "" };
                   const isPrimaryTargetActive = device.targetLang1 !== msg.sourceLang;
                   const isSecondaryTargetActive = device.targetLang2 && device.targetLang2 !== "none" && device.targetLang2 !== msg.sourceLang;
 
@@ -941,13 +958,39 @@ export default function App() {
                               <div className="text-[11px] bg-indigo-600/20 p-1.5 rounded border border-indigo-500/15">
                                 <div className="flex justify-between items-center text-[8px] text-indigo-300 uppercase font-extrabold tracking-widest mb-0.5">
                                   <span>{primaryTargetLanguageObj?.name || device.targetLang1} (Primary)</span>
-                                  <button
-                                    onClick={() => playTextSpeech(translations.t1, device.targetLang1)}
-                                    title="Play translated audio"
-                                    className="p-0.5 hover:bg-indigo-500/30 rounded text-indigo-200 transition"
-                                  >
-                                    <Volume2 className="w-3 h-3" />
-                                  </button>
+                                  <div className="flex gap-1 items-center">
+                                    <button
+                                      onClick={() => playTextSpeech(translations.t1, device.targetLang1)}
+                                      title="Play translated audio"
+                                      className="p-0.5 hover:bg-indigo-500/30 rounded text-indigo-200 transition"
+                                    >
+                                      <Volume2 className="w-3 h-3" />
+                                    </button>
+
+                                    <a
+                                      href={`https://translate.google.com/?sl=${msg.sourceLang}&tl=${device.targetLang1}&text=${encodeURIComponent(msg.text)}&op=translate`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      title="Open in Google Translate App"
+                                      className="px-1 py-0.5 bg-indigo-500/20 hover:bg-indigo-500/40 rounded text-[8px] text-indigo-200 transition flex items-center gap-0.5 font-bold"
+                                    >
+                                      <Smartphone className="w-2.5 h-2.5" />
+                                      <span>Google 译</span>
+                                    </a>
+
+                                    {device.deviceType === "iPhone" && (
+                                      <a
+                                        href={`translate://`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        title="Open Apple Translate App"
+                                        className="px-1 py-0.5 bg-indigo-500/20 hover:bg-indigo-500/40 rounded text-[8px] text-indigo-200 transition flex items-center gap-0.5 font-bold"
+                                      >
+                                        <Smartphone className="w-2.5 h-2.5" />
+                                        <span>Apple 译</span>
+                                      </a>
+                                    )}
+                                  </div>
                                 </div>
                                 <p className="font-medium text-indigo-100">
                                   {translations.t1 || <span className="italic text-slate-500">translating...</span>}
@@ -960,13 +1003,39 @@ export default function App() {
                               <div className="text-[11px] bg-fuchsia-950/20 p-1.5 rounded border border-fuchsia-900/25">
                                 <div className="flex justify-between items-center text-[8px] text-fuchsia-300 uppercase font-extrabold tracking-widest mb-0.5">
                                   <span>{secondaryTargetLanguageObj?.name || device.targetLang2} (Secondary)</span>
-                                  <button
-                                    onClick={() => playTextSpeech(translations.t2, device.targetLang2)}
-                                    title="Play translated audio"
-                                    className="p-0.5 hover:bg-fuchsia-500/30 rounded text-fuchsia-200 transition"
-                                  >
-                                    <Volume2 className="w-3 h-3" />
-                                  </button>
+                                  <div className="flex gap-1 items-center">
+                                    <button
+                                      onClick={() => playTextSpeech(translations.t2, device.targetLang2)}
+                                      title="Play translated audio"
+                                      className="p-0.5 hover:bg-fuchsia-500/30 rounded text-fuchsia-200 transition"
+                                    >
+                                      <Volume2 className="w-3 h-3" />
+                                    </button>
+
+                                    <a
+                                      href={`https://translate.google.com/?sl=${msg.sourceLang}&tl=${device.targetLang2}&text=${encodeURIComponent(msg.text)}&op=translate`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      title="Open in Google Translate App"
+                                      className="px-1 py-0.5 bg-fuchsia-500/20 hover:bg-fuchsia-500/40 rounded text-[8px] text-fuchsia-200 transition flex items-center gap-0.5 font-bold"
+                                    >
+                                      <Smartphone className="w-2.5 h-2.5" />
+                                      <span>Google 译</span>
+                                    </a>
+
+                                    {device.deviceType === "iPhone" && (
+                                      <a
+                                        href={`translate://`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        title="Open Apple Translate App"
+                                        className="px-1 py-0.5 bg-fuchsia-500/20 hover:bg-fuchsia-500/40 rounded text-[8px] text-fuchsia-200 transition flex items-center gap-0.5 font-bold"
+                                      >
+                                        <Smartphone className="w-2.5 h-2.5" />
+                                        <span>Apple 译</span>
+                                      </a>
+                                    )}
+                                  </div>
                                 </div>
                                 <p className="font-medium text-fuchsia-100">
                                   {translations.t2 || <span className="italic text-slate-500">translating...</span>}
@@ -1076,7 +1145,20 @@ export default function App() {
         </div>
 
         {/* Dashboard Control Toggle / Sandbox Switches */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Translation Engine Selector */}
+          <div className="bg-slate-900 p-1.5 rounded-xl border border-slate-850 flex items-center gap-1.5">
+            <span className="text-[9px] text-slate-400 font-bold uppercase px-1 tracking-wider">Engine:</span>
+            <select
+              value={translationEngine}
+              onChange={(e) => setTranslationEngine(e.target.value as "google" | "mymemory")}
+              className="bg-slate-950 border border-slate-800 text-[11px] text-white rounded-lg px-2 py-1 focus:outline-none focus:border-indigo-500 cursor-pointer font-semibold"
+            >
+              <option value="google">🌐 Google API</option>
+              <option value="mymemory">💾 MyMemory API</option>
+            </select>
+          </div>
+
           {/* View Mode Toggle Button */}
           <div className="bg-slate-900 p-1 rounded-xl border border-slate-800 flex items-center gap-1">
             <button
