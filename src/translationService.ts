@@ -1,4 +1,4 @@
-// Translation Service with public API integration (MyMemory API) and offline fallback dictionary.
+// Translation Service with public API integration (MyMemory API, Google Translate API) and offline fallback dictionary.
 
 export interface Language {
   code: string;
@@ -101,13 +101,42 @@ const LOCAL_FALLBACK_DICTIONARY: Record<string, Record<string, string>> = {
 };
 
 /**
+ * Translate using Google Translate free endpoint.
+ */
+async function translateWithGoogle(
+  text: string,
+  sourceLang: string,
+  targetLang: string
+): Promise<string> {
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000);
+  const response = await fetch(url, { signal: controller.signal });
+  clearTimeout(timeoutId);
+  if (response.ok) {
+    const data = await response.json();
+    if (data && data[0]) {
+      let translated = "";
+      for (const part of data[0]) {
+        if (part && part[0]) {
+          translated += part[0];
+        }
+      }
+      if (translated) return translated;
+    }
+  }
+  throw new Error("Google Translate returned empty response");
+}
+
+/**
  * Perform translation from source language to target language.
- * Attempts to call MyMemory API first, falls back to intelligent translation approximation or local mapping if unavailable.
+ * Attempts to call Google Translate or MyMemory API based on selection, falls back to local dictionary if offline.
  */
 export async function translateText(
   text: string,
   sourceLang: string,
-  targetLang: string
+  targetLang: string,
+  engine: "google" | "apple" | "mymemory" | "device_app" = "google"
 ): Promise<string> {
   if (!text || text.trim() === "") return "";
   if (sourceLang === targetLang) return text;
@@ -118,6 +147,17 @@ export async function translateText(
     return LOCAL_FALLBACK_DICTIONARY[normalizedText][targetLang];
   }
 
+  // 1. Google, Apple or Device App Engine - use Google Translate as primary high-quality backend
+  if (engine === "google" || engine === "apple" || engine === "device_app") {
+    try {
+      const translated = await translateWithGoogle(text, sourceLang, targetLang);
+      return translated;
+    } catch (error) {
+      console.warn(`Google Translate failed for engine ${engine}, falling back to MyMemory`, error);
+    }
+  }
+
+  // 2. MyMemory Translate Engine
   try {
     const pair = `${sourceLang}|${targetLang}`;
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;

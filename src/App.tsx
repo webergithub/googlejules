@@ -42,6 +42,7 @@ interface VirtualDevice {
   targetLang2: string; // Optional secondary language
   inputText: string;
   isRecording: boolean;
+  translationEngine: "google" | "apple" | "mymemory" | "device_app";
 }
 
 interface ChatMessage {
@@ -66,6 +67,7 @@ const INITIAL_SANDBOX_DEVICES: VirtualDevice[] = [
     targetLang2: "ja",
     inputText: "",
     isRecording: false,
+    translationEngine: "google",
   },
   {
     id: "device-guest1",
@@ -78,6 +80,7 @@ const INITIAL_SANDBOX_DEVICES: VirtualDevice[] = [
     targetLang2: "es",
     inputText: "",
     isRecording: false,
+    translationEngine: "apple",
   },
   {
     id: "device-guest2",
@@ -90,6 +93,7 @@ const INITIAL_SANDBOX_DEVICES: VirtualDevice[] = [
     targetLang2: "en",
     inputText: "",
     isRecording: false,
+    translationEngine: "device_app",
   }
 ];
 
@@ -119,6 +123,7 @@ export default function App() {
     targetLang2: "es",
     inputText: "",
     isRecording: false,
+    translationEngine: "google",
   });
 
   // State 5: Modals & Sharing state
@@ -463,7 +468,8 @@ export default function App() {
       targetLang1: "en",
       targetLang2: "zh",
       inputText: "",
-      isRecording: false
+      isRecording: false,
+      translationEngine: "google"
     };
 
     setSandboxDevices(prev => [...prev, newDev]);
@@ -614,15 +620,15 @@ export default function App() {
     };
 
     const choices = phrases[source] || phrases["en"];
-    const randomPhrase = choices[Math.floor(Math.random() * choices.length)];
+    const textPrompt = choices[Math.floor(Math.random() * choices.length)];
 
     setTimeout(() => {
-      updateDeviceInputText(deviceId, randomPhrase, isSandbox);
+      updateDeviceInputText(deviceId, textPrompt, isSandbox);
       setDeviceRecordingState(deviceId, false, isSandbox);
 
       // Auto-broadcast the spoken speech!
       setTimeout(() => {
-        handleSendMessage(deviceId, randomPhrase, isSandbox);
+        handleSendMessage(deviceId, textPrompt, isSandbox);
       }, 500);
     }, 2000);
   };
@@ -638,7 +644,18 @@ export default function App() {
     onRemove?: () => void;
   }) {
     const [localTranslatedMsg, setLocalTranslatedMsg] = useState<Record<string, { t1: string; t2: string }>>({});
-    const chatEndRef = useRef<HTMLDivElement | null>(null);
+    const chatContainerRef = useRef<HTMLDivElement | null>(null);
+
+    // States for Native Translate App Simulator Modal
+    const [showNativeAppModal, setShowNativeAppModal] = useState<boolean>(false);
+    const [nativeAppInput, setNativeAppInput] = useState<string>("");
+    const [nativeAppOutput, setNativeAppOutput] = useState<string>("");
+    const [isNativeAppTranslating, setIsNativeAppTranslating] = useState<boolean>(false);
+
+    // Clear translation cache when settings change
+    useEffect(() => {
+      setLocalTranslatedMsg({});
+    }, [device.targetLang1, device.targetLang2, device.translationEngine]);
 
     // Watch incoming messages to translate them to THIS device's unique configuration
     useEffect(() => {
@@ -657,12 +674,12 @@ export default function App() {
         if (localTranslatedMsg[msg.messageId]) return; // already translated
 
         // Translate to Target Lang 1 (Primary)
-        const t1 = await translateText(msg.text, msg.sourceLang, device.targetLang1);
+        const t1 = await translateText(msg.text, msg.sourceLang, device.targetLang1, device.translationEngine);
 
         // Translate to Target Lang 2 (Secondary) if set
         let t2 = "";
         if (device.targetLang2 && device.targetLang2 !== "none") {
-          t2 = await translateText(msg.text, msg.sourceLang, device.targetLang2);
+          t2 = await translateText(msg.text, msg.sourceLang, device.targetLang2, device.translationEngine);
         }
 
         setLocalTranslatedMsg(prev => ({
@@ -670,12 +687,34 @@ export default function App() {
           [msg.messageId]: { t1, t2 }
         }));
       });
-    }, [messages, device.targetLang1, device.targetLang2]);
+    }, [messages, device.targetLang1, device.targetLang2, device.translationEngine]);
 
-    // Scroll to bottom when message log changes
+    // Scroll to bottom of chat feed inside nested frame using direct scroll manipulation
     useEffect(() => {
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
     }, [messages]);
+
+    const handleNativeAppTranslate = async (textToTranslate: string) => {
+      if (!textToTranslate || !textToTranslate.trim()) return;
+      setIsNativeAppTranslating(true);
+      try {
+        const t = await translateText(textToTranslate, device.sourceLang, device.targetLang1, "google");
+        setNativeAppOutput(t);
+      } catch (err) {
+        setNativeAppOutput("[Translation failed]");
+      } finally {
+        setIsNativeAppTranslating(false);
+      }
+    };
+
+    // Auto translate inside the native app modal when input text or languages change
+    useEffect(() => {
+      if (showNativeAppModal && nativeAppInput) {
+        handleNativeAppTranslate(nativeAppInput);
+      }
+    }, [showNativeAppModal, nativeAppInput, device.sourceLang, device.targetLang1]);
 
     const sourceLanguageObj = SUPPORTED_LANGUAGES.find(l => l.code === device.sourceLang);
     const primaryTargetLanguageObj = SUPPORTED_LANGUAGES.find(l => l.code === device.targetLang1);
@@ -815,80 +854,125 @@ export default function App() {
             <div className="flex-1 flex flex-col justify-between overflow-hidden">
 
               {/* Language Customization Sub-Bar (Requirement #5: Independent settings) */}
-              <div className="bg-slate-900/90 border-b border-slate-800 p-2 grid grid-cols-3 gap-1 select-none text-[10px]">
-                {/* Source Select */}
-                <div>
-                  <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">发言 (Speak)</label>
-                  <select
-                    value={device.sourceLang}
-                    onChange={(e) => {
-                      const updatedCode = e.target.value;
-                      if (isSandbox) {
-                        setSandboxDevices(prev =>
-                          prev.map(d => d.id === device.id ? { ...d, sourceLang: updatedCode } : d)
-                        );
-                      } else {
-                        setSingleDevice(prev => ({ ...prev, sourceLang: updatedCode }));
-                      }
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
-                  >
-                    {SUPPORTED_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
-                  </select>
+              <div className="bg-slate-900/90 border-b border-slate-800 p-2 space-y-1.5 select-none text-[10px]">
+                <div className="grid grid-cols-3 gap-1">
+                  {/* Source Select */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">发言 (Speak)</label>
+                    <select
+                      value={device.sourceLang}
+                      onChange={(e) => {
+                        const updatedCode = e.target.value;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, sourceLang: updatedCode } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, sourceLang: updatedCode }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    >
+                      {SUPPORTED_LANGUAGES.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Primary Target Language Select */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">主目标 (Target 1)</label>
+                    <select
+                      value={device.targetLang1}
+                      onChange={(e) => {
+                        const updatedCode = e.target.value;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, targetLang1: updatedCode } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, targetLang1: updatedCode }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    >
+                      {SUPPORTED_LANGUAGES.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Secondary Target Language Select (Optional) */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">次目标 (Target 2)</label>
+                    <select
+                      value={device.targetLang2}
+                      onChange={(e) => {
+                        const updatedCode = e.target.value;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, targetLang2: updatedCode } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, targetLang2: updatedCode }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="none">⚠️ [None]</option>
+                      {SUPPORTED_LANGUAGES.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                {/* Primary Target Language Select */}
-                <div>
-                  <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">主目标 (Target 1)</label>
-                  <select
-                    value={device.targetLang1}
-                    onChange={(e) => {
-                      const updatedCode = e.target.value;
-                      if (isSandbox) {
-                        setSandboxDevices(prev =>
-                          prev.map(d => d.id === device.id ? { ...d, targetLang1: updatedCode } : d)
-                        );
-                      } else {
-                        setSingleDevice(prev => ({ ...prev, targetLang1: updatedCode }));
-                      }
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
-                  >
-                    {SUPPORTED_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
-                  </select>
-                </div>
+                <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-slate-800/60">
+                  {/* Engine Select */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">翻译接口 (Engine)</label>
+                    <select
+                      value={device.translationEngine}
+                      onChange={(e) => {
+                        const updatedEngine = e.target.value as any;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, translationEngine: updatedEngine } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, translationEngine: updatedEngine }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500 font-medium"
+                    >
+                      <option value="google">🌐 Google Translate API</option>
+                      <option value="apple">🍏 Apple Translate (Sim)</option>
+                      <option value="mymemory">💾 MyMemory API</option>
+                      <option value="device_app">📲 Phone Translation App</option>
+                    </select>
+                  </div>
 
-                {/* Secondary Target Language Select (Optional) */}
-                <div>
-                  <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">次目标 (Target 2)</label>
-                  <select
-                    value={device.targetLang2}
-                    onChange={(e) => {
-                      const updatedCode = e.target.value;
-                      if (isSandbox) {
-                        setSandboxDevices(prev =>
-                          prev.map(d => d.id === device.id ? { ...d, targetLang2: updatedCode } : d)
-                        );
-                      } else {
-                        setSingleDevice(prev => ({ ...prev, targetLang2: updatedCode }));
-                      }
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="none">⚠️ [None]</option>
-                    {SUPPORTED_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
-                  </select>
+                  {/* Call Phone Translation App shortcut button */}
+                  <div className="flex items-end">
+                    <button
+                      onClick={() => {
+                        setNativeAppInput(device.inputText || "Hello, welcome!");
+                        setShowNativeAppModal(true);
+                      }}
+                      className="w-full h-[22px] bg-indigo-950/40 hover:bg-indigo-900/60 text-indigo-300 hover:text-white border border-indigo-900/50 rounded flex items-center justify-center gap-1 transition text-[9px] font-semibold"
+                    >
+                      <Smartphone className="w-3 h-3 text-indigo-400" />
+                      <span>调用手机翻译App</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
               {/* Translation Chat Stream */}
-              <div className="flex-1 overflow-y-auto p-3 space-y-3.5 custom-scrollbar bg-slate-950">
+              <div
+                ref={chatContainerRef}
+                className="flex-1 overflow-y-auto p-3 space-y-3.5 custom-scrollbar bg-slate-950"
+              >
                 <div className="text-[10px] text-center text-slate-500 select-none">
                   🛡️ Synchronized Real-time Translation Feed
                 </div>
@@ -940,7 +1024,13 @@ export default function App() {
                             {isPrimaryTargetActive && (
                               <div className="text-[11px] bg-indigo-600/20 p-1.5 rounded border border-indigo-500/15">
                                 <div className="flex justify-between items-center text-[8px] text-indigo-300 uppercase font-extrabold tracking-widest mb-0.5">
-                                  <span>{primaryTargetLanguageObj?.name || device.targetLang1} (Primary)</span>
+                                  <span className="flex items-center gap-1">
+                                    {device.translationEngine === "google" && "🌐 Google"}
+                                    {device.translationEngine === "apple" && "🍏 Apple"}
+                                    {device.translationEngine === "mymemory" && "💾 MyMemory"}
+                                    {device.translationEngine === "device_app" && "📲 Phone App"}
+                                    <span>({primaryTargetLanguageObj?.name || device.targetLang1})</span>
+                                  </span>
                                   <button
                                     onClick={() => playTextSpeech(translations.t1, device.targetLang1)}
                                     title="Play translated audio"
@@ -959,7 +1049,13 @@ export default function App() {
                             {isSecondaryTargetActive && (
                               <div className="text-[11px] bg-fuchsia-950/20 p-1.5 rounded border border-fuchsia-900/25">
                                 <div className="flex justify-between items-center text-[8px] text-fuchsia-300 uppercase font-extrabold tracking-widest mb-0.5">
-                                  <span>{secondaryTargetLanguageObj?.name || device.targetLang2} (Secondary)</span>
+                                  <span className="flex items-center gap-1">
+                                    {device.translationEngine === "google" && "🌐 Google"}
+                                    {device.translationEngine === "apple" && "🍏 Apple"}
+                                    {device.translationEngine === "mymemory" && "💾 MyMemory"}
+                                    {device.translationEngine === "device_app" && "📲 Phone App"}
+                                    <span>({secondaryTargetLanguageObj?.name || device.targetLang2})</span>
+                                  </span>
                                   <button
                                     onClick={() => playTextSpeech(translations.t2, device.targetLang2)}
                                     title="Play translated audio"
@@ -973,13 +1069,27 @@ export default function App() {
                                 </p>
                               </div>
                             )}
+
+                            {/* Call Local Phone Translate App Trigger Button */}
+                            {device.translationEngine === "device_app" && (
+                              <button
+                                onClick={() => {
+                                  setNativeAppInput(msg.text);
+                                  handleNativeAppTranslate(msg.text);
+                                  setShowNativeAppModal(true);
+                                }}
+                                className="mt-1 w-full bg-indigo-950/60 hover:bg-indigo-900/60 text-[9px] text-indigo-200 py-1 px-1.5 rounded flex items-center justify-center gap-1 border border-indigo-800/30 transition font-bold"
+                              >
+                                <Smartphone className="w-3 h-3 text-indigo-400" />
+                                <span>调用本地手机翻译 App 查看</span>
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
                     </div>
                   );
                 })}
-                <div ref={chatEndRef} />
               </div>
 
               {/* Typing / voice input panel */}
@@ -1047,6 +1157,237 @@ export default function App() {
                   </button>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Simulated Phone Translation App Overlay */}
+          {showNativeAppModal && (
+            <div className="absolute inset-0 bg-slate-950 z-30 flex flex-col animate-in fade-in slide-in-from-bottom duration-200 select-none">
+              {device.deviceType === "iPhone" ? (
+                // iOS Translate App Style
+                <div className="flex-1 flex flex-col p-4 bg-black text-white font-sans">
+                  {/* Status & Close Header */}
+                  <div className="flex justify-between items-center pb-2 border-b border-zinc-800">
+                    <div className="flex items-center gap-1 text-xs text-blue-400 font-bold">
+                      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-pulse"></span>
+                      <span>iOS Translate</span>
+                    </div>
+                    <button
+                      onClick={() => setShowNativeAppModal(false)}
+                      className="text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold px-2 py-1 rounded-full transition"
+                    >
+                      Close (关闭)
+                    </button>
+                  </div>
+
+                  {/* App Branding */}
+                  <div className="flex items-center gap-1.5 py-3 text-center justify-center">
+                    <span className="text-xl">🍏</span>
+                    <h5 className="font-extrabold text-sm tracking-tight text-white uppercase">Apple System Translate</h5>
+                  </div>
+
+                  {/* Language Selector Indicator in iOS Style */}
+                  <div className="bg-zinc-900 rounded-xl p-2 flex justify-between items-center text-xs border border-zinc-850">
+                    <span className="font-semibold text-zinc-300">{sourceLanguageObj?.flag} {sourceLanguageObj?.name}</span>
+                    <span className="text-zinc-500">↔</span>
+                    <span className="font-semibold text-zinc-300">{primaryTargetLanguageObj?.flag} {primaryTargetLanguageObj?.name}</span>
+                  </div>
+
+                  {/* Source Translation Card */}
+                  <div className="flex-1 flex flex-col bg-zinc-900/60 border border-zinc-850 rounded-2xl p-3 mt-3 space-y-1">
+                    <label className="text-[9px] uppercase font-bold text-zinc-500 tracking-widest">Source Text (原文)</label>
+                    <textarea
+                      value={nativeAppInput}
+                      onChange={(e) => setNativeAppInput(e.target.value)}
+                      placeholder="Type text to translate natively..."
+                      className="flex-1 w-full bg-transparent text-sm text-white resize-none border-none focus:outline-none focus:ring-0 placeholder:text-zinc-650 text-left"
+                    />
+                    {nativeAppInput && (
+                      <button
+                        onClick={() => setNativeAppInput("")}
+                        className="self-end text-[10px] text-zinc-500 hover:text-zinc-300"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Target Translation Card */}
+                  <div className="flex-1 flex flex-col bg-blue-950/20 border border-blue-900/30 rounded-2xl p-3 mt-3 space-y-1">
+                    <div className="flex justify-between items-center">
+                      <label className="text-[9px] uppercase font-bold text-blue-400 tracking-widest">Translation (译文)</label>
+                      <button
+                        onClick={() => playTextSpeech(nativeAppOutput, device.targetLang1)}
+                        className="p-1 hover:bg-blue-900/40 rounded text-blue-300 transition"
+                        title="Speech synthesis"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto text-sm font-semibold text-blue-100 break-words pt-1 text-left">
+                      {isNativeAppTranslating ? (
+                        <div className="flex items-center gap-1.5 text-zinc-500 text-xs">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Apple Neural Engine translating...</span>
+                        </div>
+                      ) : (
+                        nativeAppOutput || <span className="text-zinc-600 italic font-normal text-xs">Waiting for text...</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="space-y-2 mt-4">
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => {
+                          if (isSandbox) {
+                            setSandboxDevices(prev =>
+                              prev.map(d => d.id === device.id ? { ...d, inputText: nativeAppOutput } : d)
+                            );
+                          } else {
+                            setSingleDevice(prev => ({ ...prev, inputText: nativeAppOutput }));
+                          }
+                          setShowNativeAppModal(false);
+                          setSystemAlerts(prev => [...prev, `Pasted translation back to ${device.name}'s chat input.`]);
+                        }}
+                        disabled={!nativeAppOutput}
+                        className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold py-2 rounded-xl transition disabled:opacity-50"
+                      >
+                        Paste to Chat
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          handleSendMessage(device.id, nativeAppInput, isSandbox);
+                          setShowNativeAppModal(false);
+                        }}
+                        disabled={!nativeAppInput}
+                        className="bg-zinc-800 hover:bg-zinc-700 text-white text-[10px] font-bold py-2 rounded-xl transition disabled:opacity-50"
+                      >
+                        Send Original
+                      </button>
+                    </div>
+
+                    {/* Link to Real Google Translate */}
+                    <a
+                      href={`https://translate.google.com/?sl=${device.sourceLang}&tl=${device.targetLang1}&text=${encodeURIComponent(nativeAppInput)}&op=translate`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block text-center text-[10px] text-blue-400 hover:underline pt-1"
+                    >
+                      🔗 Open External Safari Translate App
+                    </a>
+                  </div>
+                </div>
+              ) : (
+                // Android Google Translate Style
+                <div className="flex-1 flex flex-col p-4 bg-zinc-950 text-white font-sans">
+                  {/* Status & Close Header */}
+                  <div className="flex justify-between items-center pb-2 border-b border-zinc-800">
+                    <div className="flex items-center gap-1 text-xs text-teal-400 font-bold">
+                      <span className="w-1.5 h-1.5 bg-teal-500 rounded-full animate-ping"></span>
+                      <span>Google Translate</span>
+                    </div>
+                    <button
+                      onClick={() => setShowNativeAppModal(false)}
+                      className="text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold px-2 py-1 rounded-full transition"
+                    >
+                      Close (关闭)
+                    </button>
+                  </div>
+
+                  {/* App Branding */}
+                  <div className="flex items-center gap-1.5 py-3 text-center justify-center">
+                    <span className="text-xl">🤖</span>
+                    <h5 className="font-extrabold text-sm tracking-tight text-white uppercase">Google Translate App</h5>
+                  </div>
+
+                  {/* Android Style Header Langs */}
+                  <div className="grid grid-cols-3 items-center text-center text-xs bg-zinc-900 border border-zinc-800 rounded-xl p-2">
+                    <span className="font-bold text-teal-400">{sourceLanguageObj?.name}</span>
+                    <span className="text-zinc-500 font-bold">➔</span>
+                    <span className="font-bold text-teal-400">{primaryTargetLanguageObj?.name}</span>
+                  </div>
+
+                  {/* Text card split */}
+                  <div className="flex-1 flex flex-col bg-zinc-900 rounded-2xl p-3.5 mt-3 space-y-1.5 border border-zinc-800">
+                    <span className="text-[9px] uppercase font-bold text-zinc-500 tracking-wider">Source (输入)</span>
+                    <textarea
+                      value={nativeAppInput}
+                      onChange={(e) => setNativeAppInput(e.target.value)}
+                      placeholder="Enter text to translate..."
+                      className="flex-1 bg-transparent text-sm text-white resize-none border-none focus:outline-none focus:ring-0 text-left"
+                    />
+
+                    <div className="border-t border-zinc-800/80 my-2 pt-2 flex flex-col flex-1 min-h-[80px]">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[9px] uppercase font-bold text-teal-400 tracking-wider">Translation (译文)</span>
+                        <button
+                          onClick={() => playTextSpeech(nativeAppOutput, device.targetLang1)}
+                          className="p-1 hover:bg-zinc-800 rounded text-teal-400 transition"
+                          title="Speak"
+                        >
+                          <Volume2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto text-sm text-white font-medium pt-1 text-left">
+                        {isNativeAppTranslating ? (
+                          <div className="flex items-center gap-1.5 text-zinc-500 text-xs">
+                            <span className="w-2 h-2 bg-teal-500 rounded-full animate-bounce"></span>
+                            <span>Google Cloud Engine translating...</span>
+                          </div>
+                        ) : (
+                          nativeAppOutput || <span className="text-zinc-600 italic text-xs font-normal">Waiting for text...</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="space-y-2 mt-4">
+                    <button
+                      onClick={() => {
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, inputText: nativeAppOutput } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, inputText: nativeAppOutput }));
+                        }
+                        setShowNativeAppModal(false);
+                        setSystemAlerts(prev => [...prev, `Pasted translation back to ${device.name}'s chat input.`]);
+                      }}
+                      disabled={!nativeAppOutput}
+                      className="w-full bg-teal-600 hover:bg-teal-500 text-white text-[10px] font-bold py-2 px-3 rounded-xl transition disabled:opacity-50"
+                    >
+                      Paste Translation to Chat
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        handleSendMessage(device.id, nativeAppInput, isSandbox);
+                        setShowNativeAppModal(false);
+                      }}
+                      disabled={!nativeAppInput}
+                      className="w-full bg-zinc-800 hover:bg-zinc-700 text-white text-[10px] font-bold py-2 px-3 rounded-xl transition disabled:opacity-50"
+                    >
+                      Send Original to Group Chat
+                    </button>
+
+                    <a
+                      href={`https://translate.google.com/?sl=${device.sourceLang}&tl=${device.targetLang1}&text=${encodeURIComponent(nativeAppInput)}&op=translate`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block text-center text-[10px] text-teal-400 hover:underline pt-1"
+                    >
+                      🔗 Open Google Translate App Intent
+                    </a>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
