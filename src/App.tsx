@@ -22,7 +22,8 @@ import {
 import {
   SUPPORTED_LANGUAGES,
   translateText,
-  playTextSpeech
+  playTextSpeech,
+  type TranslationEngine
 } from "./translationService";
 
 // Standard WebSocket URL determination
@@ -42,6 +43,7 @@ interface VirtualDevice {
   targetLang2: string; // Optional secondary language
   inputText: string;
   isRecording: boolean;
+  translationEngine: TranslationEngine;
 }
 
 interface ChatMessage {
@@ -66,6 +68,7 @@ const INITIAL_SANDBOX_DEVICES: VirtualDevice[] = [
     targetLang2: "ja",
     inputText: "",
     isRecording: false,
+    translationEngine: "google",
   },
   {
     id: "device-guest1",
@@ -78,6 +81,7 @@ const INITIAL_SANDBOX_DEVICES: VirtualDevice[] = [
     targetLang2: "es",
     inputText: "",
     isRecording: false,
+    translationEngine: "google",
   },
   {
     id: "device-guest2",
@@ -90,6 +94,7 @@ const INITIAL_SANDBOX_DEVICES: VirtualDevice[] = [
     targetLang2: "en",
     inputText: "",
     isRecording: false,
+    translationEngine: "google",
   }
 ];
 
@@ -119,6 +124,7 @@ export default function App() {
     targetLang2: "es",
     inputText: "",
     isRecording: false,
+    translationEngine: "google",
   });
 
   // State 5: Modals & Sharing state
@@ -131,6 +137,19 @@ export default function App() {
   const [airdropSearching, setAirdropSearching] = useState<boolean>(false);
   const [nfcSuccessText, setNfcSuccessText] = useState<string>("");
   const [airdropSuccessText, setAirdropSuccessText] = useState<string>("");
+
+  // State for simulated Camera Scanning View
+  const [scanningDeviceId, setScanningDeviceId] = useState<string | null>(null);
+
+  // State for simulated External Translate App Interface Context
+  interface ExternalAppSession {
+    deviceId: string;
+    text: string;
+    isSandbox: boolean;
+  }
+  const [externalAppSession, setExternalAppSession] = useState<ExternalAppSession | null>(null);
+  const [externalAppTranslation, setExternalAppTranslation] = useState<string>("");
+  const [externalAppTranslating, setExternalAppTranslating] = useState<boolean>(false);
 
   // Speech Recognition hook refs
   const speechRecognitions = useRef<Record<string, any>>({});
@@ -238,6 +257,29 @@ export default function App() {
         .catch(err => console.error("Error generating QR code", err));
     }
   }, [groupId]);
+
+  // Translate text in real time for external translation app simulation
+  useEffect(() => {
+    if (externalAppSession) {
+      const dev = externalAppSession.isSandbox
+        ? sandboxDevices.find(d => d.id === externalAppSession.deviceId)
+        : singleDevice;
+      if (dev) {
+        setExternalAppTranslating(true);
+        translateText(externalAppSession.text, dev.sourceLang, dev.targetLang1, "google")
+          .then(result => {
+            setExternalAppTranslation(result);
+            setExternalAppTranslating(false);
+          })
+          .catch(err => {
+            console.error("External translate simulation error:", err);
+            setExternalAppTranslating(false);
+          });
+      }
+    } else {
+      setExternalAppTranslation("");
+    }
+  }, [externalAppSession]);
 
   // Helper: Join Room via WebSocket
   const joinRoomWS = (roomId: string, dev: VirtualDevice) => {
@@ -366,6 +408,16 @@ export default function App() {
 
     if (!device) return;
 
+    // Requirement: Call external translator app mockup if configured
+    if (device.translationEngine === "external") {
+      setExternalAppSession({
+        deviceId,
+        text: text.trim(),
+        isSandbox
+      });
+      return;
+    }
+
     // Send via WebSocket to server
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
@@ -463,7 +515,8 @@ export default function App() {
       targetLang1: "en",
       targetLang2: "zh",
       inputText: "",
-      isRecording: false
+      isRecording: false,
+      translationEngine: "google"
     };
 
     setSandboxDevices(prev => [...prev, newDev]);
@@ -638,7 +691,7 @@ export default function App() {
     onRemove?: () => void;
   }) {
     const [localTranslatedMsg, setLocalTranslatedMsg] = useState<Record<string, { t1: string; t2: string }>>({});
-    const chatEndRef = useRef<HTMLDivElement | null>(null);
+    const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
     // Watch incoming messages to translate them to THIS device's unique configuration
     useEffect(() => {
@@ -656,13 +709,13 @@ export default function App() {
 
         if (localTranslatedMsg[msg.messageId]) return; // already translated
 
-        // Translate to Target Lang 1 (Primary)
-        const t1 = await translateText(msg.text, msg.sourceLang, device.targetLang1);
+        // Translate to Target Lang 1 (Primary) using configured engine
+        const t1 = await translateText(msg.text, msg.sourceLang, device.targetLang1, device.translationEngine);
 
         // Translate to Target Lang 2 (Secondary) if set
         let t2 = "";
         if (device.targetLang2 && device.targetLang2 !== "none") {
-          t2 = await translateText(msg.text, msg.sourceLang, device.targetLang2);
+          t2 = await translateText(msg.text, msg.sourceLang, device.targetLang2, device.translationEngine);
         }
 
         setLocalTranslatedMsg(prev => ({
@@ -670,11 +723,13 @@ export default function App() {
           [msg.messageId]: { t1, t2 }
         }));
       });
-    }, [messages, device.targetLang1, device.targetLang2]);
+    }, [messages, device.targetLang1, device.targetLang2, device.translationEngine]);
 
-    // Scroll to bottom when message log changes
+    // Scroll to bottom of container when message log changes (without parent layout jump)
     useEffect(() => {
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
     }, [messages]);
 
     const sourceLanguageObj = SUPPORTED_LANGUAGES.find(l => l.code === device.sourceLang);
@@ -745,6 +800,127 @@ export default function App() {
             </div>
           </div>
 
+          {/* Simulated Scanner View Overlay */}
+          {scanningDeviceId === device.id && (
+            <div className="absolute inset-0 bg-slate-950 z-30 flex flex-col items-center justify-center p-4 text-center">
+              <div className="text-xs text-indigo-400 font-bold uppercase tracking-wider mb-6 animate-pulse">
+                📷 Simulated Camera Scanning...
+              </div>
+
+              {/* Viewfinder box */}
+              <div className="relative w-48 h-48 border-2 border-indigo-500 rounded-2xl flex items-center justify-center overflow-hidden bg-slate-900 shadow-[0_0_20px_rgba(99,102,241,0.3)]">
+                {/* Scanner laser effect */}
+                <div className="absolute w-full h-0.5 bg-green-400 animate-pulse top-1/2 left-0 shadow-[0_0_10px_#4ade80]"></div>
+                <QrCode className="w-24 h-24 text-slate-800 animate-pulse" />
+              </div>
+
+              <div className="text-[11px] text-slate-400 mt-6 max-w-[200px]">
+                Aligning viewfinder with Host's QR Code. Reading Room credentials...
+              </div>
+            </div>
+          )}
+
+          {/* Simulated External Translate App overlay */}
+          {externalAppSession && externalAppSession.deviceId === device.id && (
+            <div className="absolute inset-0 bg-slate-950 z-30 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
+              {/* App Bar */}
+              <div className="bg-indigo-900 text-white px-4 py-3.5 flex items-center justify-between shadow-md select-none">
+                <div className="flex items-center gap-1.5">
+                  <Languages className="w-4 h-4 text-indigo-200 animate-spin-slow" />
+                  <span className="text-xs font-bold tracking-tight">External Translate App</span>
+                </div>
+                <button
+                  onClick={() => setExternalAppSession(null)}
+                  className="text-[10px] bg-indigo-950 hover:bg-indigo-800 px-2.5 py-1 rounded-lg text-indigo-200 font-semibold transition"
+                >
+                  Cancel
+                </button>
+              </div>
+
+              {/* App Content */}
+              <div className="flex-1 p-4 flex flex-col justify-between space-y-4 overflow-y-auto">
+                <div className="space-y-3 flex-1 flex flex-col justify-start">
+
+                  {/* Source block */}
+                  <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 text-left">
+                    <div className="flex justify-between items-center text-[8px] text-slate-500 font-bold uppercase tracking-widest mb-1.5">
+                      <span>Source Text ({sourceLanguageObj?.name})</span>
+                    </div>
+                    <p className="text-xs text-white leading-relaxed font-medium">
+                      {externalAppSession.text}
+                    </p>
+                  </div>
+
+                  {/* Transition arrow */}
+                  <div className="flex justify-center text-indigo-400">
+                    <RefreshCw className="w-4 h-4 animate-spin-slow" />
+                  </div>
+
+                  {/* Target block */}
+                  <div className="bg-indigo-950/20 border border-indigo-900/40 rounded-2xl p-3 text-left flex-1 min-h-[120px] flex flex-col justify-between">
+                    <div>
+                      <div className="flex justify-between items-center text-[8px] text-indigo-400 font-bold uppercase tracking-widest mb-1.5">
+                        <span>Translated Text ({primaryTargetLanguageObj?.name})</span>
+                        {externalAppTranslating && (
+                          <span className="text-[8px] text-green-400 lowercase italic">translating...</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-indigo-100 leading-relaxed font-semibold">
+                        {externalAppTranslation || "..."}
+                      </p>
+                    </div>
+
+                    {/* Audio playback */}
+                    {externalAppTranslation && (
+                      <div className="flex justify-end pt-2">
+                        <button
+                          onClick={() => playTextSpeech(externalAppTranslation, device.targetLang1)}
+                          className="bg-indigo-600/30 hover:bg-indigo-600/50 p-1 rounded-lg text-indigo-200 transition flex items-center gap-1 text-[9px] font-semibold"
+                        >
+                          <Volume2 className="w-3 h-3" />
+                          <span>TTS Playback</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Return Back Button */}
+                <div className="space-y-2">
+                  <button
+                    onClick={() => {
+                      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                        wsRef.current.send(JSON.stringify({
+                          type: "SEND_MESSAGE",
+                          payload: {
+                            groupId,
+                            senderId: device.id,
+                            senderName: device.name,
+                            text: externalAppSession.text,
+                            sourceLang: device.sourceLang
+                          }
+                        }));
+                      }
+
+                      // Clear input and exit app mockup context
+                      updateDeviceInputText(device.id, "", externalAppSession.isSandbox);
+                      setExternalAppSession(null);
+                      setSystemAlerts(prev => [...prev, `${device.name} translated and broadcasted message using external Translate App!`]);
+                    }}
+                    className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl flex items-center justify-center gap-1.5 shadow-lg transition-colors"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Copy & Send back to Chat</span>
+                  </button>
+
+                  <p className="text-[9px] text-slate-500 text-center">
+                    Simulating system context launch of external on-device translator.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Connection Screen (when disconnected) */}
           {!device.isConnected && (
             <div className="flex-1 flex flex-col justify-center items-center p-4 bg-slate-950/95 text-center">
@@ -769,13 +945,34 @@ export default function App() {
                 ) : (
                   <>
                     {groupId ? (
-                      <button
-                        onClick={() => handleJoinGroup(groupId, isSandbox, device)}
-                        className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-colors"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        Join Group {groupId}
-                      </button>
+                      <div className="space-y-1.5">
+                        <button
+                          onClick={() => handleJoinGroup(groupId, isSandbox, device)}
+                          className="w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-colors"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          Join Group {groupId}
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            if (!groupId) {
+                              alert("Please create a Host translation group first!");
+                              return;
+                            }
+                            setScanningDeviceId(device.id);
+                            setTimeout(() => {
+                              setScanningDeviceId(null);
+                              handleJoinGroup(groupId, isSandbox, device);
+                              setSystemAlerts(prev => [...prev, `${device.name} scanned host QR Code and joined group ${groupId}!`]);
+                            }, 1800);
+                          }}
+                          className="w-full bg-slate-850 hover:bg-slate-800 border border-slate-800 text-white text-xs font-semibold py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-all"
+                        >
+                          <QrCode className="w-3.5 h-3.5 text-indigo-400" />
+                          Scan QR Code (Simulated)
+                        </button>
+                      </div>
                     ) : (
                       <div className="space-y-1">
                         <input
@@ -815,80 +1012,109 @@ export default function App() {
             <div className="flex-1 flex flex-col justify-between overflow-hidden">
 
               {/* Language Customization Sub-Bar (Requirement #5: Independent settings) */}
-              <div className="bg-slate-900/90 border-b border-slate-800 p-2 grid grid-cols-3 gap-1 select-none text-[10px]">
-                {/* Source Select */}
-                <div>
-                  <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">发言 (Speak)</label>
-                  <select
-                    value={device.sourceLang}
-                    onChange={(e) => {
-                      const updatedCode = e.target.value;
-                      if (isSandbox) {
-                        setSandboxDevices(prev =>
-                          prev.map(d => d.id === device.id ? { ...d, sourceLang: updatedCode } : d)
-                        );
-                      } else {
-                        setSingleDevice(prev => ({ ...prev, sourceLang: updatedCode }));
-                      }
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
-                  >
-                    {SUPPORTED_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
-                  </select>
+              <div className="bg-slate-900/90 border-b border-slate-800 p-2.5 flex flex-col gap-1.5 select-none text-[10px]">
+
+                <div className="grid grid-cols-3 gap-1">
+                  {/* Source Select */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">发言 (Speak)</label>
+                    <select
+                      value={device.sourceLang}
+                      onChange={(e) => {
+                        const updatedCode = e.target.value;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, sourceLang: updatedCode } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, sourceLang: updatedCode }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    >
+                      {SUPPORTED_LANGUAGES.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Primary Target Language Select */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">主目标 (Target 1)</label>
+                    <select
+                      value={device.targetLang1}
+                      onChange={(e) => {
+                        const updatedCode = e.target.value;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, targetLang1: updatedCode } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, targetLang1: updatedCode }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    >
+                      {SUPPORTED_LANGUAGES.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Secondary Target Language Select (Optional) */}
+                  <div>
+                    <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">次目标 (Target 2)</label>
+                    <select
+                      value={device.targetLang2}
+                      onChange={(e) => {
+                        const updatedCode = e.target.value;
+                        if (isSandbox) {
+                          setSandboxDevices(prev =>
+                            prev.map(d => d.id === device.id ? { ...d, targetLang2: updatedCode } : d)
+                          );
+                        } else {
+                          setSingleDevice(prev => ({ ...prev, targetLang2: updatedCode }));
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="none">⚠️ [None]</option>
+                      {SUPPORTED_LANGUAGES.map(lang => (
+                        <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                {/* Primary Target Language Select */}
-                <div>
-                  <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">主目标 (Target 1)</label>
+                {/* Translation Engine/Mode Row (Requirement #5) */}
+                <div className="pt-1.5 border-t border-slate-800/60 flex items-center justify-between gap-1">
+                  <span className="text-[8px] text-indigo-400 uppercase font-extrabold tracking-wider flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-indigo-400" />
+                    Translation Mode:
+                  </span>
                   <select
-                    value={device.targetLang1}
+                    value={device.translationEngine}
                     onChange={(e) => {
-                      const updatedCode = e.target.value;
+                      const mode = e.target.value as TranslationEngine;
                       if (isSandbox) {
                         setSandboxDevices(prev =>
-                          prev.map(d => d.id === device.id ? { ...d, targetLang1: updatedCode } : d)
+                          prev.map(d => d.id === device.id ? { ...d, translationEngine: mode } : d)
                         );
                       } else {
-                        setSingleDevice(prev => ({ ...prev, targetLang1: updatedCode }));
+                        setSingleDevice(prev => ({ ...prev, translationEngine: mode }));
                       }
                     }}
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
+                    className="bg-slate-950 border border-slate-800 text-[10px] text-white rounded px-1.5 py-0.5 focus:outline-none focus:border-indigo-500 font-medium"
                   >
-                    {SUPPORTED_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Secondary Target Language Select (Optional) */}
-                <div>
-                  <label className="block text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">次目标 (Target 2)</label>
-                  <select
-                    value={device.targetLang2}
-                    onChange={(e) => {
-                      const updatedCode = e.target.value;
-                      if (isSandbox) {
-                        setSandboxDevices(prev =>
-                          prev.map(d => d.id === device.id ? { ...d, targetLang2: updatedCode } : d)
-                        );
-                      } else {
-                        setSingleDevice(prev => ({ ...prev, targetLang2: updatedCode }));
-                      }
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded px-1 py-0.5 focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="none">⚠️ [None]</option>
-                    {SUPPORTED_LANGUAGES.map(lang => (
-                      <option key={lang.code} value={lang.code}>{lang.flag} {lang.name}</option>
-                    ))}
+                    <option value="google">🌐 Google Translate API</option>
+                    <option value="apple">🍏 Apple Translate (Simulated)</option>
+                    <option value="external">📱 Phone Translate App (Simulation)</option>
                   </select>
                 </div>
               </div>
 
               {/* Translation Chat Stream */}
-              <div className="flex-1 overflow-y-auto p-3 space-y-3.5 custom-scrollbar bg-slate-950">
+              <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-3 space-y-3.5 custom-scrollbar bg-slate-950">
                 <div className="text-[10px] text-center text-slate-500 select-none">
                   🛡️ Synchronized Real-time Translation Feed
                 </div>
@@ -979,7 +1205,6 @@ export default function App() {
                     </div>
                   );
                 })}
-                <div ref={chatEndRef} />
               </div>
 
               {/* Typing / voice input panel */}
@@ -1058,11 +1283,11 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex flex-col">
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex flex-col animate-fadeIn">
       {/* Upper Navigation Header */}
       <header className="border-b border-slate-900 bg-slate-950/80 backdrop-blur-md sticky top-0 z-30 px-6 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-lg">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-lg animate-pulse">
             <Languages className="w-5 h-5" />
           </div>
           <div>
