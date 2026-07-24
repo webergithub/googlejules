@@ -1,4 +1,4 @@
-// Translation Service with public API integration (MyMemory API) and offline fallback dictionary.
+// Translation Service with public API integration (Google Translate & MyMemory API) and offline fallback dictionary.
 
 export interface Language {
   code: string;
@@ -102,7 +102,8 @@ const LOCAL_FALLBACK_DICTIONARY: Record<string, Record<string, string>> = {
 
 /**
  * Perform translation from source language to target language.
- * Attempts to call MyMemory API first, falls back to intelligent translation approximation or local mapping if unavailable.
+ * Attempts to call Google Translate API first, then falls back to MyMemory API,
+ * and finally to local translation mapping/intelligent approximation.
  */
 export async function translateText(
   text: string,
@@ -118,11 +119,34 @@ export async function translateText(
     return LOCAL_FALLBACK_DICTIONARY[normalizedText][targetLang];
   }
 
+  // 1. Try Google Translate Public API
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data[0]) {
+        const translated = data[0].map((x: any) => x[0]).join("");
+        if (translated) {
+          return translated;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn("Google Translate API failed, trying MyMemory API as fallback", error);
+  }
+
+  // 2. Try MyMemory Translation API
   try {
     const pair = `${sourceLang}|${targetLang}`;
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;
 
-    // Add timeout to prevent hanging UI
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
 
@@ -139,12 +163,11 @@ export async function translateText(
     console.warn("MyMemory Translation API failed, using fallback mapper", error);
   }
 
-  // General intelligent heuristics or pseudo-translation fallback for robust offline demo
+  // 3. Simulated fallback
   return getSimulatedFallbackTranslation(text, sourceLang, targetLang);
 }
 
 function getSimulatedFallbackTranslation(text: string, source: string, target: string): string {
-  // Let's create a beautiful simulated fallback so the translation app is NEVER empty and shows a realistic translation
   const lowerText = text.toLowerCase();
   console.log(`Translating from ${source} to ${target}`);
 

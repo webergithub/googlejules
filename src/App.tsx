@@ -638,7 +638,7 @@ export default function App() {
     onRemove?: () => void;
   }) {
     const [localTranslatedMsg, setLocalTranslatedMsg] = useState<Record<string, { t1: string; t2: string }>>({});
-    const chatEndRef = useRef<HTMLDivElement | null>(null);
+    const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
     // Watch incoming messages to translate them to THIS device's unique configuration
     useEffect(() => {
@@ -672,10 +672,12 @@ export default function App() {
       });
     }, [messages, device.targetLang1, device.targetLang2]);
 
-    // Scroll to bottom when message log changes
+    // Scroll to bottom when message log changes or translations update
     useEffect(() => {
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages]);
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+      }
+    }, [messages, localTranslatedMsg]);
 
     const sourceLanguageObj = SUPPORTED_LANGUAGES.find(l => l.code === device.sourceLang);
     const primaryTargetLanguageObj = SUPPORTED_LANGUAGES.find(l => l.code === device.targetLang1);
@@ -888,7 +890,7 @@ export default function App() {
               </div>
 
               {/* Translation Chat Stream */}
-              <div className="flex-1 overflow-y-auto p-3 space-y-3.5 custom-scrollbar bg-slate-950">
+              <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-3 space-y-3.5 custom-scrollbar bg-slate-950">
                 <div className="text-[10px] text-center text-slate-500 select-none">
                   🛡️ Synchronized Real-time Translation Feed
                 </div>
@@ -941,13 +943,41 @@ export default function App() {
                               <div className="text-[11px] bg-indigo-600/20 p-1.5 rounded border border-indigo-500/15">
                                 <div className="flex justify-between items-center text-[8px] text-indigo-300 uppercase font-extrabold tracking-widest mb-0.5">
                                   <span>{primaryTargetLanguageObj?.name || device.targetLang1} (Primary)</span>
-                                  <button
-                                    onClick={() => playTextSpeech(translations.t1, device.targetLang1)}
-                                    title="Play translated audio"
-                                    className="p-0.5 hover:bg-indigo-500/30 rounded text-indigo-200 transition"
-                                  >
-                                    <Volume2 className="w-3 h-3" />
-                                  </button>
+                                  <div className="flex gap-1.5 items-center">
+                                    {/* Launch translation App (调用手机翻译App) */}
+                                    <button
+                                      onClick={() => {
+                                        const textParam = encodeURIComponent(msg.text);
+                                        const appUrl = `googletranslate://?sl=${msg.sourceLang}&tl=${device.targetLang1}&text=${textParam}`;
+                                        const webUrl = `https://translate.google.com/?sl=${msg.sourceLang}&tl=${device.targetLang1}&text=${textParam}&op=translate`;
+
+                                        // Attempt to open native Google Translate app using dynamic iframe
+                                        const iframe = document.createElement("iframe");
+                                        iframe.style.display = "none";
+                                        iframe.src = appUrl;
+                                        document.body.appendChild(iframe);
+                                        setTimeout(() => {
+                                          document.body.removeChild(iframe);
+                                        }, 100);
+
+                                        // Fallback/direct window.open for reliable cross-browser usage
+                                        window.open(webUrl, "_blank");
+                                      }}
+                                      title="Open in Mobile Translate App (调用手机翻译App)"
+                                      className="p-0.5 hover:bg-indigo-500/30 rounded text-indigo-200 transition flex items-center gap-0.5"
+                                    >
+                                      <Smartphone className="w-2.5 h-2.5" />
+                                      <span className="text-[7px] font-bold">App</span>
+                                    </button>
+
+                                    <button
+                                      onClick={() => playTextSpeech(translations.t1, device.targetLang1)}
+                                      title="Play translated audio"
+                                      className="p-0.5 hover:bg-indigo-500/30 rounded text-indigo-200 transition"
+                                    >
+                                      <Volume2 className="w-3 h-3" />
+                                    </button>
+                                  </div>
                                 </div>
                                 <p className="font-medium text-indigo-100">
                                   {translations.t1 || <span className="italic text-slate-500">translating...</span>}
@@ -960,13 +990,41 @@ export default function App() {
                               <div className="text-[11px] bg-fuchsia-950/20 p-1.5 rounded border border-fuchsia-900/25">
                                 <div className="flex justify-between items-center text-[8px] text-fuchsia-300 uppercase font-extrabold tracking-widest mb-0.5">
                                   <span>{secondaryTargetLanguageObj?.name || device.targetLang2} (Secondary)</span>
-                                  <button
-                                    onClick={() => playTextSpeech(translations.t2, device.targetLang2)}
-                                    title="Play translated audio"
-                                    className="p-0.5 hover:bg-fuchsia-500/30 rounded text-fuchsia-200 transition"
-                                  >
-                                    <Volume2 className="w-3 h-3" />
-                                  </button>
+                                  <div className="flex gap-1.5 items-center">
+                                    {/* Launch translation App (调用手机翻译App) */}
+                                    <button
+                                      onClick={() => {
+                                        const textParam = encodeURIComponent(msg.text);
+                                        const appUrl = `googletranslate://?sl=${msg.sourceLang}&tl=${device.targetLang2}&text=${textParam}`;
+                                        const webUrl = `https://translate.google.com/?sl=${msg.sourceLang}&tl=${device.targetLang2}&text=${textParam}&op=translate`;
+
+                                        // Attempt to open native Google Translate app using dynamic iframe
+                                        const iframe = document.createElement("iframe");
+                                        iframe.style.display = "none";
+                                        iframe.src = appUrl;
+                                        document.body.appendChild(iframe);
+                                        setTimeout(() => {
+                                          document.body.removeChild(iframe);
+                                        }, 100);
+
+                                        // Fallback/direct window.open for reliable cross-browser usage
+                                        window.open(webUrl, "_blank");
+                                      }}
+                                      title="Open in Mobile Translate App (调用手机翻译App)"
+                                      className="p-0.5 hover:bg-fuchsia-500/30 rounded text-fuchsia-200 transition flex items-center gap-0.5"
+                                    >
+                                      <Smartphone className="w-2.5 h-2.5" />
+                                      <span className="text-[7px] font-bold">App</span>
+                                    </button>
+
+                                    <button
+                                      onClick={() => playTextSpeech(translations.t2, device.targetLang2)}
+                                      title="Play translated audio"
+                                      className="p-0.5 hover:bg-fuchsia-500/30 rounded text-fuchsia-200 transition"
+                                    >
+                                      <Volume2 className="w-3 h-3" />
+                                    </button>
+                                  </div>
                                 </div>
                                 <p className="font-medium text-fuchsia-100">
                                   {translations.t2 || <span className="italic text-slate-500">translating...</span>}
@@ -979,7 +1037,6 @@ export default function App() {
                     </div>
                   );
                 })}
-                <div ref={chatEndRef} />
               </div>
 
               {/* Typing / voice input panel */}
