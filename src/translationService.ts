@@ -119,10 +119,9 @@ export async function translateText(
   }
 
   try {
-    const pair = `${sourceLang}|${targetLang}`;
-    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;
+    // Try Google Translate public API first for higher quality and reliability
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
 
-    // Add timeout to prevent hanging UI
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
 
@@ -131,12 +130,31 @@ export async function translateText(
 
     if (response.ok) {
       const data = await response.json();
-      if (data && data.responseData && data.responseData.translatedText) {
-        return data.responseData.translatedText;
+      if (data && data[0] && data[0][0] && data[0][0][0]) {
+        return data[0][0][0];
       }
     }
   } catch (error) {
-    console.warn("MyMemory Translation API failed, using fallback mapper", error);
+    console.warn("Google Translate API failed, trying MyMemory as secondary API", error);
+    try {
+      const pair = `${sourceLang}|${targetLang}`;
+      const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.responseData && data.responseData.translatedText) {
+          return data.responseData.translatedText;
+        }
+      }
+    } catch (err2) {
+      console.warn("MyMemory Translation API failed too, using fallback mapper", err2);
+    }
   }
 
   // General intelligent heuristics or pseudo-translation fallback for robust offline demo
