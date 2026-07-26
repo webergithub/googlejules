@@ -118,15 +118,37 @@ export async function translateText(
     return LOCAL_FALLBACK_DICTIONARY[normalizedText][targetLang];
   }
 
+  // Primary attempt: Google Translate API
   try {
-    const pair = `${sourceLang}|${targetLang}`;
-    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;
-
-    // Add timeout to prevent hanging UI
+    const googleUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(googleUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data[0]) {
+        const translatedText = data[0].map((item: any) => item && item[0] ? item[0] : "").join("");
+        if (translatedText) {
+          return translatedText;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn("Google Translate API failed, trying MyMemory...", error);
+  }
+
+  // Secondary attempt: MyMemory Translation API
+  try {
+    const pair = `${sourceLang}|${targetLang}`;
+    const myMemoryUrl = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const response = await fetch(myMemoryUrl, { signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (response.ok) {
