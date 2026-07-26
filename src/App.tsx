@@ -638,7 +638,7 @@ export default function App() {
     onRemove?: () => void;
   }) {
     const [localTranslatedMsg, setLocalTranslatedMsg] = useState<Record<string, { t1: string; t2: string }>>({});
-    const chatEndRef = useRef<HTMLDivElement | null>(null);
+    const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
     // Watch incoming messages to translate them to THIS device's unique configuration
     useEffect(() => {
@@ -674,7 +674,9 @@ export default function App() {
 
     // Scroll to bottom when message log changes
     useEffect(() => {
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+      }
     }, [messages]);
 
     const sourceLanguageObj = SUPPORTED_LANGUAGES.find(l => l.code === device.sourceLang);
@@ -888,7 +890,7 @@ export default function App() {
               </div>
 
               {/* Translation Chat Stream */}
-              <div className="flex-1 overflow-y-auto p-3 space-y-3.5 custom-scrollbar bg-slate-950">
+              <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-3 space-y-3.5 custom-scrollbar bg-slate-950">
                 <div className="text-[10px] text-center text-slate-500 select-none">
                   🛡️ Synchronized Real-time Translation Feed
                 </div>
@@ -979,7 +981,6 @@ export default function App() {
                     </div>
                   );
                 })}
-                <div ref={chatEndRef} />
               </div>
 
               {/* Typing / voice input panel */}
