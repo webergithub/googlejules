@@ -119,8 +119,7 @@ export async function translateText(
   }
 
   try {
-    const pair = `${sourceLang}|${targetLang}`;
-    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
 
     // Add timeout to prevent hanging UI
     const controller = new AbortController();
@@ -131,12 +130,14 @@ export async function translateText(
 
     if (response.ok) {
       const data = await response.json();
-      if (data && data.responseData && data.responseData.translatedText) {
-        return data.responseData.translatedText;
+      if (data && data[0]) {
+        const translatedSegments = data[0].map((x: any) => x[0]).filter(Boolean);
+        const translatedText = translatedSegments.join("");
+        if (translatedText) return translatedText;
       }
     }
   } catch (error) {
-    console.warn("MyMemory Translation API failed, using fallback mapper", error);
+    console.warn("Google Translation API failed, using fallback mapper", error);
   }
 
   // General intelligent heuristics or pseudo-translation fallback for robust offline demo
