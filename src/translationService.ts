@@ -118,6 +118,27 @@ export async function translateText(
     return LOCAL_FALLBACK_DICTIONARY[normalizedText][targetLang];
   }
 
+  // Try Google Translate API (gtx client) first
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const data = await response.json();
+      // Google Translate response format: [[["translated_text", "original_text", ...]]]
+      if (data && data[0] && data[0][0] && data[0][0][0]) {
+        return data[0][0][0];
+      }
+    }
+  } catch (error) {
+    console.warn("Google Translate API (gtx) failed, trying MyMemory API...", error);
+  }
+
   try {
     const pair = `${sourceLang}|${targetLang}`;
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${pair}`;

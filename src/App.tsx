@@ -674,7 +674,12 @@ export default function App() {
 
     // Scroll to bottom when message log changes
     useEffect(() => {
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      if (chatEndRef.current) {
+        const parent = chatEndRef.current.parentElement;
+        if (parent) {
+          parent.scrollTop = parent.scrollHeight;
+        }
+      }
     }, [messages]);
 
     const sourceLanguageObj = SUPPORTED_LANGUAGES.find(l => l.code === device.sourceLang);
@@ -1030,6 +1035,7 @@ export default function App() {
 
                   <button
                     onClick={() => handleSendMessage(device.id, device.inputText, isSandbox)}
+                    aria-label="Send"
                     className="p-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full transition-colors flex items-center justify-center"
                   >
                     <Send className="w-4 h-4" />
